@@ -9,12 +9,16 @@ from fpdf import FPDF
 # ----------------- SETUP -----------------
 load_dotenv()
 
-client = genai.Client(
-    api_key=os.getenv("GEMINI_API_KEY")
-)
+API_KEY = os.getenv("GEMINI_API_KEY")
+
+if not API_KEY:
+    st.error("GEMINI_API_KEY is not set. Please add it to Streamlit Secrets.")
+    st.stop()
+
+client = genai.Client(api_key=API_KEY)
 
 st.set_page_config(page_title="AI VC Startup Screener", layout="wide")
-st.title("🚀 AI Startup Screening & Investment Memo Generator")
+st.title("🚀 AI VC Startup Screening & Investment Memo Generator")
 
 # ----------------- HELPERS -----------------
 def read_pdf(file):
@@ -24,7 +28,7 @@ def read_pdf(file):
         extracted = page.extract_text()
         if extracted:
             text += extracted + "\n"
-    return text[:8000]  # keep prompt safe on free tier
+    return text[:8000]
 
 
 def clean_memo_text(text: str) -> str:
@@ -75,9 +79,7 @@ startup_description = st.text_area("Paste website copy / product description")
 
 st.subheader("Founder Information")
 founder_linkedin = st.text_input("Founder LinkedIn Profile URL")
-founder_background = st.text_area(
-    "Founder Background (LinkedIn About + Experience)"
-)
+founder_background = st.text_area("Founder Background (LinkedIn About + Experience)")
 
 st.subheader("Traction")
 traction = st.text_area("Users, revenue, pilots, LOIs (if any)")
@@ -102,43 +104,12 @@ Do NOT invent company names, products, traction, founders, numbers, or customers
 If information is missing, explicitly say "Information not provided."
 If assumptions are made, clearly label them as assumptions.
 Do NOT rename or substitute the company.
-The company name is fixed and must be used consistently.
 
-The company being evaluated is:
-COMPANY NAME: {startup_name}
+Company name: {startup_name}
 
-You are a venture capitalist writing an internal investment committee memo.
-This memo is meant to persuade skeptical partners, not to summarize facts.
+Write an internal VC investment committee memo.
 
-Writing style:
-- Write in first-person plural ("we believe", "we are concerned")
-- Be opinionated, thoughtful, and honest
-- Include conviction AND doubts
-- Avoid academic or consultant language
-- Use narrative paragraphs
-- Explicitly call out what makes this uncomfortable or controversial
-
-Structure the memo as follows:
-
-1. Investment Summary
-2. Company & Product
-3. Founder & Team
-4. Traction & Early Signals
-5. Market Opportunity
-6. Business Model & Monetization
-7. Risks & Concerns
-8. Why This Can Win
-9. Scoring (Early-Stage Weighted)
-   - Market: 35%
-   - Founder: 30%
-   - Product: 20%
-   - Traction: 10%
-   - Risk: 5%
-10. Key Open Questions
-11. Final Recommendation (Proceed / Watch / Pass)
-
-Startup Details:
-Name: {startup_name}
+Startup details:
 Sector: {sector}
 Stage: {stage}
 Geography: {geography}
@@ -158,22 +129,34 @@ Traction:
 Pitch Deck Notes:
 {deck_text}
 
+Sections:
+1. Investment Summary
+2. Company & Product
+3. Founder & Team
+4. Traction & Early Signals
+5. Market Opportunity
+6. Business Model & Monetization
+7. Risks & Concerns
+8. Why This Can Win
+9. Scoring (Market 35%, Founder 30%, Product 20%, Traction 10%, Risk 5%)
+10. Key Open Questions
+11. Final Recommendation (Proceed / Watch / Pass)
+
 Formatting rules:
-- Do NOT use tables
-- Write currency normally (e.g. "$5 million")
-- Use clear section headers
+- No tables
+- Clean paragraphs
+- Normal numbers (e.g. "$5 million")
 """
 
         try:
             response = client.models.generate_content(
                 model="gemini-2.0-flash",
                 contents=PROMPT,
-                config={"timeout": 60}
+                
             )
             raw_output = response.text
-
         except Exception as e:
-            st.error("AI request failed or timed out.")
+            st.error("AI request failed.")
             st.error(str(e))
             st.stop()
 
@@ -182,7 +165,6 @@ Formatting rules:
         st.header("📄 Investment Memo")
         st.markdown(output)
 
-        # ----------------- EXPORT -----------------
         st.download_button(
             "⬇️ Download Memo (Markdown)",
             output,
@@ -190,16 +172,5 @@ Formatting rules:
             "text/markdown"
         )
 
-        pdf_safe_text = normalize_for_pdf(output)
-        pdf = memo_to_pdf(pdf_safe_text)
-
-        st.download_button(
-            "⬇️ Download Memo (PDF)",
-            pdf.output(dest="S").encode("latin-1"),
-            f"{startup_name}_investment_memo.pdf",
-            "application/pdf"
-        )
-
-        st.success("Memo generated successfully.")
 
 
