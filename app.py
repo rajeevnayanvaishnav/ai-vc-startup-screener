@@ -9,16 +9,33 @@ from fpdf import FPDF
 # ----------------- SETUP -----------------
 load_dotenv()
 
-API_KEY = os.getenv("GEMINI_API_KEY")
-
-if not API_KEY:
-    st.error("GEMINI_API_KEY is not set. Please add it to Streamlit Secrets.")
-    st.stop()
-
-client = genai.Client(api_key=API_KEY)
+DEFAULT_API_KEY = os.getenv("GEMINI_API_KEY")
 
 st.set_page_config(page_title="AI VC Startup Screener", layout="wide")
 st.title("🚀 AI VC Startup Screening & Investment Memo Generator")
+
+# ----------------- SIDEBAR (BYOK + MODE) -----------------
+st.sidebar.header("⚙️ Settings")
+
+memo_mode = st.sidebar.radio(
+    "Memo Mode",
+    ["Quick IC Memo", "Full IC Memo"],
+    help="Quick mode is faster and uses fewer tokens."
+)
+
+user_api_key = st.sidebar.text_input(
+    "Use your own Gemini API key (optional)",
+    type="password",
+    help="Your key is used only for this request and never stored."
+)
+
+effective_api_key = user_api_key if user_api_key else DEFAULT_API_KEY
+
+if not effective_api_key:
+    st.warning("No API key found. Add one in Streamlit Secrets or paste your own.")
+    st.stop()
+
+client = genai.Client(api_key=effective_api_key)
 
 # ----------------- HELPERS -----------------
 def read_pdf(file):
@@ -28,7 +45,7 @@ def read_pdf(file):
         extracted = page.extract_text()
         if extracted:
             text += extracted + "\n"
-    return text[:8000]
+    return text[:3000]  # hard cap for token safety
 
 
 def clean_memo_text(text: str) -> str:
@@ -48,8 +65,6 @@ def normalize_for_pdf(text: str) -> str:
         "’": "'",
         "•": "-",
         "→": "->",
-        "≤": "<=",
-        "≥": ">=",
     }
     for k, v in replacements.items():
         text = text.replace(k, v)
@@ -64,7 +79,6 @@ def memo_to_pdf(text):
     for line in text.split("\n"):
         pdf.multi_cell(0, 6, line)
     return pdf
-
 
 # ----------------- INPUTS -----------------
 st.header("📥 Startup Inputs")
@@ -88,6 +102,8 @@ st.subheader("Pitch Deck (Optional)")
 pitch_deck = st.file_uploader("Upload Pitch Deck (PDF)", type=["pdf"])
 deck_text = read_pdf(pitch_deck) if pitch_deck else ""
 
+deck_section = f"\nPitch Deck Notes:\n{deck_text}" if deck_text else ""
+
 # ----------------- ANALYSIS -----------------
 if st.button("🔍 Analyze Startup"):
 
@@ -97,7 +113,37 @@ if st.button("🔍 Analyze Startup"):
 
     with st.spinner("Writing IC memo..."):
 
-        PROMPT = f"""
+        if memo_mode == "Quick IC Memo":
+            PROMPT = f"""
+CRITICAL CONSTRAINT:
+Use ONLY the information explicitly provided.
+Do NOT invent facts. If missing, say "Information not provided."
+
+Company: {startup_name}
+
+Write a SHORT internal VC memo (max 500 words).
+
+Cover:
+1. What the company does
+2. Why this could matter
+3. Founder assessment
+4. Market snapshot
+5. Top 3 risks
+6. Preliminary recommendation (Proceed / Watch / Pass)
+
+Be opinionated, concise, and honest.
+
+Startup Description:
+{startup_description}
+
+Founder Background:
+{founder_background}
+
+Traction:
+{traction}
+"""
+        else:
+            PROMPT = f"""
 CRITICAL CONSTRAINT:
 You must ONLY use the information explicitly provided below.
 Do NOT invent company names, products, traction, founders, numbers, or customers.
@@ -125,9 +171,7 @@ Startup Description:
 
 Traction:
 {traction}
-
-Pitch Deck Notes:
-{deck_text}
+{deck_section}
 
 Sections:
 1. Investment Summary
@@ -151,13 +195,20 @@ Formatting rules:
         try:
             response = client.models.generate_content(
                 model="gemini-2.0-flash",
-                contents=PROMPT,
-                
+                contents=PROMPT
             )
             raw_output = response.text
+
         except Exception as e:
-            st.error("AI request failed.")
-            st.error(str(e))
+            if "RESOURCE_EXHAUSTED" in str(e):
+                st.warning(
+                    "⚠️ AI quota exhausted.\n\n"
+                    "Please wait a minute, switch to Quick IC Memo, "
+                    "or use your own API key."
+                )
+            else:
+                st.error("AI request failed.")
+                st.error(str(e))
             st.stop()
 
         output = clean_memo_text(raw_output)
@@ -171,6 +222,18 @@ Formatting rules:
             f"{startup_name}_investment_memo.md",
             "text/markdown"
         )
+
+        pdf_safe = normalize_for_pdf(output)
+        pdf = memo_to_pdf(pdf_safe)
+
+        st.download_button(
+            "⬇️ Download Memo (PDF)",
+            pdf.output(dest="S").encode("latin-1"),
+            f"{startup_name}_investment_memo.pdf",
+            "application/pdf"
+        )
+
+        st.success("Memo generated successfully.")
 
 
 
