@@ -1,20 +1,20 @@
 import streamlit as st
 import os
 import re
+import requests
 from dotenv import load_dotenv
 from pypdf import PdfReader
-from google import genai
 from fpdf import FPDF
 
 # ----------------- SETUP -----------------
 load_dotenv()
 
-DEFAULT_API_KEY = os.getenv("GEMINI_API_KEY")
+DEFAULT_OPENROUTER_KEY = os.getenv("OPENROUTER_API_KEY")
 
 st.set_page_config(page_title="AI VC Startup Screener", layout="wide")
 st.title("🚀 AI VC Startup Screening & Investment Memo Generator")
 
-# ----------------- SIDEBAR (BYOK + MODE) -----------------
+# ----------------- SIDEBAR -----------------
 st.sidebar.header("⚙️ Settings")
 
 memo_mode = st.sidebar.radio(
@@ -24,18 +24,16 @@ memo_mode = st.sidebar.radio(
 )
 
 user_api_key = st.sidebar.text_input(
-    "Use your own Gemini API key (optional)",
+    "Use your own OpenRouter API key (optional)",
     type="password",
-    help="Your key is used only for this request and never stored."
+    help="Used only for this request. Never stored."
 )
 
-effective_api_key = user_api_key if user_api_key else DEFAULT_API_KEY
+OPENROUTER_KEY = user_api_key if user_api_key else DEFAULT_OPENROUTER_KEY
 
-if not effective_api_key:
-    st.warning("No API key found. Add one in Streamlit Secrets or paste your own.")
+if not OPENROUTER_KEY:
+    st.warning("No OpenRouter API key found. Add one in Secrets or paste your own.")
     st.stop()
-
-client = genai.Client(api_key=effective_api_key)
 
 # ----------------- HELPERS -----------------
 def read_pdf(file):
@@ -45,7 +43,7 @@ def read_pdf(file):
         extracted = page.extract_text()
         if extracted:
             text += extracted + "\n"
-    return text[:3000]  # hard cap for token safety
+    return text[:3000]  # hard cap for safety
 
 
 def clean_memo_text(text: str) -> str:
@@ -80,6 +78,31 @@ def memo_to_pdf(text):
         pdf.multi_cell(0, 6, line)
     return pdf
 
+
+def call_nex_agi(prompt: str) -> str:
+    url = "https://openrouter.ai/api/v1/chat/completions"
+
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://streamlit.io",
+        "X-Title": "AI VC Startup Screener",
+    }
+
+    payload = {
+        "model": "nex-agi/deepseek-v3.1-nex-n1:free",
+        "messages": [
+            {"role": "system", "content": "You are a venture capitalist writing internal IC memos."},
+            {"role": "user", "content": prompt}
+        ],
+        "temperature": 0.4,
+        "max_tokens": 2000
+    }
+
+    response = requests.post(url, headers=headers, json=payload, timeout=60)
+    response.raise_for_status()
+    return response.json()["choices"][0]["message"]["content"]
+
 # ----------------- INPUTS -----------------
 st.header("📥 Startup Inputs")
 
@@ -101,7 +124,6 @@ traction = st.text_area("Users, revenue, pilots, LOIs (if any)")
 st.subheader("Pitch Deck (Optional)")
 pitch_deck = st.file_uploader("Upload Pitch Deck (PDF)", type=["pdf"])
 deck_text = read_pdf(pitch_deck) if pitch_deck else ""
-
 deck_section = f"\nPitch Deck Notes:\n{deck_text}" if deck_text else ""
 
 # ----------------- ANALYSIS -----------------
@@ -193,22 +215,10 @@ Formatting rules:
 """
 
         try:
-            response = client.models.generate_content(
-                model="gemini-2.0-flash",
-                contents=PROMPT
-            )
-            raw_output = response.text
-
+            raw_output = call_nex_agi(PROMPT)
         except Exception as e:
-            if "RESOURCE_EXHAUSTED" in str(e):
-                st.warning(
-                    "⚠️ AI quota exhausted.\n\n"
-                    "Please wait a minute, switch to Quick IC Memo, "
-                    "or use your own API key."
-                )
-            else:
-                st.error("AI request failed.")
-                st.error(str(e))
+            st.error("AI request failed.")
+            st.error(str(e))
             st.stop()
 
         output = clean_memo_text(raw_output)
@@ -234,6 +244,7 @@ Formatting rules:
         )
 
         st.success("Memo generated successfully.")
+
 
 
 
