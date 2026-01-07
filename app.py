@@ -12,6 +12,43 @@ load_dotenv()
 DEFAULT_OPENROUTER_KEY = os.getenv("OPENROUTER_API_KEY")
 
 st.set_page_config(page_title="AI VC Startup Screener", layout="wide")
+st.markdown(
+    """
+    <style>
+    .memo-container {
+        max-width: 900px;
+        margin: auto;
+        font-size: 16px;
+        line-height: 1.65;
+        color: #e6e6e6;
+    }
+
+    .memo-container h1 {
+        font-size: 24px;
+        margin-top: 32px;
+        margin-bottom: 12px;
+    }
+
+    .memo-container h2 {
+        font-size: 20px;
+        margin-top: 28px;
+        margin-bottom: 10px;
+    }
+
+    .memo-container h3 {
+        font-size: 18px;
+        margin-top: 24px;
+        margin-bottom: 8px;
+    }
+
+    .memo-container p {
+        margin-bottom: 14px;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
 st.title("🚀 AI VC Startup Screening & Investment Memo Generator")
 
 # ----------------- SIDEBAR -----------------
@@ -224,7 +261,12 @@ Formatting rules:
         output = clean_memo_text(raw_output)
 
         st.header("📄 Investment Memo")
-        st.markdown(output)
+        st.markdown(
+        f"<div class='memo-container'>{output}</div>",
+        unsafe_allow_html=True
+        )
+
+
 
         st.download_button(
             "⬇️ Download Memo (Markdown)",
