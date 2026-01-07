@@ -1,33 +1,40 @@
 import streamlit as st
 import os
 import re
+import requests
 from dotenv import load_dotenv
 from pypdf import PdfReader
-from google import genai
 from fpdf import FPDF
 
 # ----------------- SETUP -----------------
 load_dotenv()
 
-API_KEY = os.getenv("GEMINI_API_KEY")
+DEFAULT_OPENROUTER_KEY = os.getenv("OPENROUTER_API_KEY")
+MAX_PDF_MB = 10
 
-if not API_KEY:
-    st.error("GEMINI_API_KEY is not set. Please add it to Streamlit Secrets.")
+st.set_page_config(page_title="AI VC Startup Screener", layout="wide")
+st.title("🚀 AI VC Startup Screening & Investment Memo Generator")
+
+# ----------------- SIDEBAR -----------------
+st.sidebar.header("⚙️ Settings")
+
+memo_mode = st.sidebar.radio(
+    "Memo Mode",
+    ["Quick IC Memo", "Full IC Memo"],
+    help="Quick mode is faster and uses fewer tokens."
+)
+
+user_api_key = st.sidebar.text_input(
+    "Use your own OpenRouter API key (optional)",
+    type="password",
+    help="Used only for this request. Never stored."
+)
+
+OPENROUTER_KEY = user_api_key if user_api_key else DEFAULT_OPENROUTER_KEY
+
+if not OPENROUTER_KEY:
+    st.warning("No OpenRouter API key found. Add one in Secrets or paste your own.")
     st.stop()
-
-client = genai.Client(api_key=API_KEY)
-
-st.set_page_config(
-    page_title="AI VC Startup Screener",
-    layout="wide"
-)
-
-st.title("🚀 AI VC Startup Screening & IC Memo Generator")
-st.caption(
-    "Internal-style investment memos. Opinionated. Honest. No hallucinations."
-)
-
-MAX_DECK_MB = 10
 
 # ----------------- HELPERS -----------------
 def read_pdf(file):
@@ -37,7 +44,7 @@ def read_pdf(file):
         extracted = page.extract_text()
         if extracted:
             text += extracted + "\n"
-    return text[:6000]  # hard cap for free-tier safety
+    return text[:3000]  # aggressive cap for free models
 
 
 def clean_memo_text(text: str) -> str:
@@ -57,8 +64,6 @@ def normalize_for_pdf(text: str) -> str:
         "’": "'",
         "•": "-",
         "→": "->",
-        "≤": "<=",
-        "≥": ">=",
     }
     for k, v in replacements.items():
         text = text.replace(k, v)
@@ -75,69 +80,90 @@ def memo_to_pdf(text):
     return pdf
 
 
+def call_nex_agi(prompt: str) -> str:
+    url = "https://openrouter.ai/api/v1/chat/completions"
+
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://streamlit.io",
+        "X-Title": "AI VC Startup Screener",
+    }
+
+    payload = {
+        "model": "nex-agi/deepseek-v3.1-nex-n1:free",
+        "messages": [
+            {"role": "system", "content": "You are a venture capitalist writing internal IC memos."},
+            {"role": "user", "content": prompt}
+        ],
+        "temperature": 0.4,
+        "max_tokens": 1800
+    }
+
+    response = requests.post(url, headers=headers, json=payload, timeout=60)
+    response.raise_for_status()
+    return response.json()["choices"][0]["message"]["content"]
+
 # ----------------- INPUTS -----------------
 st.header("📥 Startup Inputs")
 
-startup_name = st.text_input("Startup Name *")
+startup_name = st.text_input("Startup Name")
 sector = st.text_input("Sector")
 stage = st.selectbox("Stage", ["Pre-Seed", "Seed"])
 geography = st.text_input("Geography")
 
-st.subheader("Startup Description *")
+st.subheader("Startup Description")
 startup_description = st.text_area(
-    "What does the company do and why do customers care?",
-    height=120
+    "Paste website copy / product description",
+    help="What the company does and why customers care."
 )
 
-st.subheader("Founder Information *")
-founder_linkedin = st.text_input("Founder LinkedIn URL")
+st.subheader("Founder Information")
+founder_linkedin = st.text_input("Founder LinkedIn Profile URL")
 founder_background = st.text_area(
-    "Paste LinkedIn About + Experience",
-    height=120
+    "Founder Background (LinkedIn About + Experience)",
+    help="Founder–problem fit matters more than polish."
+)
+
+st.subheader("Business Model & GTM (IMPORTANT)")
+st.caption(
+    "Pitch decks are often visual or incomplete. "
+    "Providing this directly leads to a more accurate IC memo."
+)
+
+business_model = st.text_area(
+    "Business Model",
+    help="How the company makes money (pricing, buyer, ACV, motion)."
+)
+
+gtm_strategy = st.text_area(
+    "Go-To-Market Strategy",
+    help="ICP, distribution channels, sales motion, wedges."
 )
 
 st.subheader("Traction")
-traction = st.text_area(
-    "Users, revenue, pilots, LOIs (if any)",
-    height=80
-)
+traction = st.text_area("Users, revenue, pilots, LOIs (if any)")
 
-st.subheader("Business Model (IMPORTANT)")
-business_model = st.text_area(
-    "How does the company make money? Pricing, buyers, payers, assumptions.\n"
-    "This helps the AI avoid guessing.",
-    height=100
-)
-
-st.subheader("Go-To-Market Strategy (IMPORTANT)")
-gtm_strategy = st.text_area(
-    "Who is the buyer? How do they acquire customers? Sales motion?\n"
-    "Pitch decks often miss this in extractable text.",
-    height=100
-)
-
-st.subheader("Pitch Deck (Optional)")
-pitch_deck = st.file_uploader(
-    "Upload Pitch Deck (PDF, max 10MB)",
-    type=["pdf"]
-)
+st.subheader("Pitch Deck (Optional, PDF)")
+pitch_deck = st.file_uploader("Upload Pitch Deck (PDF)", type=["pdf"])
 
 deck_text = ""
-deck_warning = False
+deck_note = ""
 
 if pitch_deck:
-    if pitch_deck.size > MAX_DECK_MB * 1024 * 1024:
-        deck_warning = True
+    size_mb = pitch_deck.size / (1024 * 1024)
+    if size_mb > MAX_PDF_MB:
         st.warning(
-            f"Pitch deck is {pitch_deck.size // (1024*1024)}MB. "
-            f"Only decks under {MAX_DECK_MB}MB can be processed.\n\n"
-            "The memo will rely on your written inputs instead."
+            f"Pitch deck is {int(size_mb)}MB. "
+            f"Only files under {MAX_PDF_MB}MB can be processed. "
+            "Please rely on the Business Model and GTM inputs above."
         )
+        deck_note = "Pitch deck not processed due to file size."
     else:
         deck_text = read_pdf(pitch_deck)
 
 # ----------------- ANALYSIS -----------------
-if st.button("🔍 Generate IC Memo"):
+if st.button("🔍 Analyze Startup"):
 
     if not startup_name or not startup_description or not founder_background:
         st.error("Startup name, description, and founder background are required.")
@@ -145,29 +171,55 @@ if st.button("🔍 Generate IC Memo"):
 
     with st.spinner("Writing IC memo..."):
 
-        PROMPT = f"""
+        if memo_mode == "Quick IC Memo":
+            PROMPT = f"""
+CRITICAL CONSTRAINT:
+Use ONLY the information explicitly provided.
+Do NOT invent facts. If missing, say "Information not provided."
+
+Company: {startup_name}
+
+Write a SHORT internal VC memo (max 500 words).
+
+Cover:
+1. What the company does
+2. Why this could matter
+3. Founder assessment
+4. Market snapshot
+5. Top 3 risks
+6. Preliminary recommendation (Proceed / Watch / Pass)
+
+Be opinionated, concise, and honest.
+
+Startup Description:
+{startup_description}
+
+Founder Background:
+{founder_background}
+
+Business Model:
+{business_model}
+
+GTM Strategy:
+{gtm_strategy}
+
+Traction:
+{traction}
+"""
+        else:
+            PROMPT = f"""
 CRITICAL CONSTRAINT:
 You must ONLY use the information explicitly provided below.
 Do NOT invent company names, products, traction, founders, numbers, or customers.
 If information is missing, explicitly say "Information not provided."
 If assumptions are made, clearly label them as assumptions.
 Do NOT rename or substitute the company.
-The company name is fixed and must be used consistently.
 
-You are a venture capitalist writing an internal investment committee memo.
-This memo is meant to persuade skeptical partners, not to summarize facts.
+Company name: {startup_name}
 
-Writing style:
-- First-person plural ("we believe", "we are concerned")
-- Opinionated and honest
-- Include conviction AND doubts
-- No consultant or academic tone
-- Narrative paragraphs, not bullets
-- Explicitly call out uncomfortable or controversial aspects
+Write an internal VC investment committee memo.
 
-Company Name: {startup_name}
-
-Startup Details:
+Startup details:
 Sector: {sector}
 Stage: {stage}
 Geography: {geography}
@@ -181,19 +233,19 @@ Founder Background:
 Startup Description:
 {startup_description}
 
-Traction:
-{traction}
-
 Business Model:
 {business_model}
 
 Go-To-Market Strategy:
 {gtm_strategy}
 
-Pitch Deck Extract (may be incomplete):
-{deck_text}
+Traction:
+{traction}
 
-Structure:
+Pitch Deck Notes:
+{deck_text if deck_text else deck_note}
+
+Sections:
 1. Investment Summary
 2. Company & Product
 3. Founder & Team
@@ -208,16 +260,12 @@ Structure:
 
 Formatting rules:
 - No tables
-- Clear section headers
+- Clean paragraphs
 - Normal numbers (e.g. "$5 million")
 """
 
         try:
-            response = client.models.generate_content(
-                model="gemini-2.0-flash",
-                contents=PROMPT
-            )
-            raw_output = response.text
+            raw_output = call_nex_agi(PROMPT)
         except Exception as e:
             st.error("AI request failed.")
             st.error(str(e))
@@ -225,13 +273,50 @@ Formatting rules:
 
         output = clean_memo_text(raw_output)
 
+        # ----------------- STYLING -----------------
+        st.markdown(
+            """
+            <style>
+            .memo-container {
+                max-width: 900px;
+                margin: auto;
+                font-size: 16px;
+                line-height: 1.65;
+                color: #e6e6e6;
+            }
+
+            .memo-container h1 {
+                font-size: 24px;
+                margin-top: 32px;
+                margin-bottom: 12px;
+            }
+
+            .memo-container h2 {
+                font-size: 20px;
+                margin-top: 28px;
+                margin-bottom: 10px;
+            }
+
+            .memo-container h3 {
+                font-size: 18px;
+                margin-top: 24px;
+                margin-bottom: 8px;
+            }
+
+            .memo-container p {
+                margin-bottom: 14px;
+            }
+            </style>
+            """,
+            unsafe_allow_html=True
+        )
+
         st.header("📄 Investment Memo")
-        if deck_warning:
-            st.info("⚠️ Pitch deck not fully processed — memo relies on written inputs.")
+        st.markdown(
+            f"<div class='memo-container'>{output}</div>",
+            unsafe_allow_html=True
+        )
 
-        st.markdown(output)
-
-        # ----------------- EXPORT -----------------
         st.download_button(
             "⬇️ Download Memo (Markdown)",
             output,
@@ -239,8 +324,8 @@ Formatting rules:
             "text/markdown"
         )
 
-        pdf_safe_text = normalize_for_pdf(output)
-        pdf = memo_to_pdf(pdf_safe_text)
+        pdf_safe = normalize_for_pdf(output)
+        pdf = memo_to_pdf(pdf_safe)
 
         st.download_button(
             "⬇️ Download Memo (PDF)",
